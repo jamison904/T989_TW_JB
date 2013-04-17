@@ -1,5 +1,5 @@
 /*
- *  drivers/cpufreq/cpufreq_lagfree.c
+ *  drivers/cpufreq/cpufreq_minmax.c
  *
  *  Copyright (C)  2001 Russell King
  *            (C)  2003 Venkatesh Pallipadi <venkatesh.pallipadi@intel.com>.
@@ -9,6 +9,11 @@
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
+ *
+ * This governor is an adapatation of the conservative governor.
+ * See the Documentation/cpu-freq/governors.txt for more information.
+ *
+ * Adapatation from conservative by Erasmux.
  */
 
 #include <linux/kernel.h>
@@ -29,18 +34,14 @@
 #include <linux/kernel_stat.h>
 #include <linux/percpu.h>
 #include <linux/mutex.h>
-#include <linux/earlysuspend.h>
+
 /*
  * dbs is used in this file as a shortform for demandbased switching
  * It helps to keep variable names smaller, simpler
  */
 
-#define DEF_FREQUENCY_UP_THRESHOLD			(50)
-#define DEF_FREQUENCY_DOWN_THRESHOLD		(15)
-#define FREQ_STEP_DOWN 						(160000)
-#define FREQ_SLEEP_MAX 						(400000)
-#define FREQ_AWAKE_MIN 						(100000)
-#define FREQ_STEP_UP_SLEEP_PERCENT 			(20)
+#define DEF_FREQUENCY_UP_THRESHOLD		(92)
+#define DEF_FREQUENCY_DOWN_THRESHOLD		(27)
 
 /*
  * The polling frequency of this governor depends on the capability of
@@ -53,7 +54,6 @@
  * All times here are in uS.
  */
 static unsigned int def_sampling_rate;
-unsigned int suspended = 0;
 #define MIN_SAMPLING_RATE_RATIO			(2)
 /* for correct statistics, we need at least 10 ticks between each measure */
 #define MIN_STAT_SAMPLING_RATE			\
@@ -61,9 +61,11 @@ unsigned int suspended = 0;
 #define MIN_SAMPLING_RATE			\
 			(def_sampling_rate / MIN_SAMPLING_RATE_RATIO)
 #define MAX_SAMPLING_RATE			(500 * def_sampling_rate)
-#define DEF_SAMPLING_DOWN_FACTOR		(4)
-#define MAX_SAMPLING_DOWN_FACTOR		(10)
+#define DEF_SAMPLING_DOWN_FACTOR		(10)
+#define MAX_SAMPLING_DOWN_FACTOR		(100)
 #define TRANSITION_LATENCY_LIMIT		(10 * 1000 * 1000)
+#define CONFIG_CPU_FREQ_SAMPLING_LATENCY_MULTIPLIER (500)
+#define CONFIG_CPU_FREQ_MIN_TICKS (2)
 
 static void do_dbs_timer(struct work_struct *work);
 
@@ -96,15 +98,13 @@ struct dbs_tuners {
 	unsigned int up_threshold;
 	unsigned int down_threshold;
 	unsigned int ignore_nice;
-	//unsigned int freq_step;
 };
 
 static struct dbs_tuners dbs_tuners_ins = {
 	.up_threshold = DEF_FREQUENCY_UP_THRESHOLD,
 	.down_threshold = DEF_FREQUENCY_DOWN_THRESHOLD,
 	.sampling_down_factor = DEF_SAMPLING_DOWN_FACTOR,
-	.ignore_nice = 1,
-	//.freq_step = 5,
+	.ignore_nice = 0,
 };
 
 static inline unsigned int get_cpu_idle_time(unsigned int cpu)
@@ -160,7 +160,7 @@ __ATTR(_name, 0444, show_##_name, NULL)
 define_one_ro(sampling_rate_max);
 define_one_ro(sampling_rate_min);
 
-/* cpufreq_lagfree Governor Tunables */
+/* cpufreq_minmax Governor Tunables */
 #define show_one(file_name, object)					\
 static ssize_t show_##file_name						\
 (struct cpufreq_policy *unused, char *buf)				\
@@ -172,7 +172,6 @@ show_one(sampling_down_factor, sampling_down_factor);
 show_one(up_threshold, up_threshold);
 show_one(down_threshold, down_threshold);
 show_one(ignore_nice_load, ignore_nice);
-//show_one(freq_step, freq_step);
 
 static ssize_t store_sampling_down_factor(struct cpufreq_policy *unused,
 		const char *buf, size_t count)
@@ -281,29 +280,6 @@ static ssize_t store_ignore_nice_load(struct cpufreq_policy *policy,
 	return count;
 }
 
-/*static ssize_t store_freq_step(struct cpufreq_policy *policy,
-		const char *buf, size_t count)
-{
-	unsigned int input;
-	int ret;
-
-	ret = sscanf(buf, "%u", &input);
-
-	if (ret != 1)
-		return -EINVAL;
-
-	if (input > 100)
-		input = 100;
-
-	/ * no need to test here if freq_step is zero as the user might actually
-	 * want this, they would be crazy though :) * /
-	mutex_lock(&dbs_mutex);
-	dbs_tuners_ins.freq_step = input;
-	mutex_unlock(&dbs_mutex);
-
-	return count;
-}*/
-
 #define define_one_rw(_name) \
 static struct freq_attr _name = \
 __ATTR(_name, 0644, show_##_name, store_##_name)
@@ -313,7 +289,6 @@ define_one_rw(sampling_down_factor);
 define_one_rw(up_threshold);
 define_one_rw(down_threshold);
 define_one_rw(ignore_nice_load);
-//define_one_rw(freq_step);
 
 static struct attribute * dbs_attributes[] = {
 	&sampling_rate_max.attr,
@@ -323,13 +298,12 @@ static struct attribute * dbs_attributes[] = {
 	&up_threshold.attr,
 	&down_threshold.attr,
 	&ignore_nice_load.attr,
-	//&freq_step.attr,
 	NULL
 };
 
 static struct attribute_group dbs_attr_group = {
 	.attrs = dbs_attributes,
-	.name = "lagfree",
+	.name = "minmax",
 };
 
 /************************** sysfs end ************************/
@@ -338,7 +312,7 @@ static void dbs_check_cpu(int cpu)
 {
 	unsigned int idle_ticks, up_idle_ticks, down_idle_ticks;
 	unsigned int tmp_idle_ticks, total_idle_ticks;
-	unsigned int freq_target;
+	//unsigned int freq_target;
 	unsigned int freq_down_sampling_rate;
 	struct cpu_dbs_info_s *this_dbs_info = &per_cpu(cpu_dbs_info, cpu);
 	struct cpufreq_policy *policy;
@@ -357,10 +331,9 @@ static void dbs_check_cpu(int cpu)
 	 *	- If current idle time is more than 80%, then we try to
 	 *	  decrease frequency
 	 *
-	 * Any frequency increase takes it to the maximum frequency.
-	 * Frequency reduction happens at minimum steps of
-	 * 5% (default) of max_frequency
 	 */
+
+	this_dbs_info->down_skip++;
 
 	/* Check for frequency increase */
 	idle_ticks = UINT_MAX;
@@ -385,30 +358,10 @@ static void dbs_check_cpu(int cpu)
 			this_dbs_info->prev_cpu_idle_up;
 
 		/* if we are already at full speed then break out early */
-		if (this_dbs_info->requested_freq == policy->max && !suspended)
+		if (this_dbs_info->requested_freq == policy->max)
 			return;
 
-		//freq_target = (dbs_tuners_ins.freq_step * policy->max) / 100;
-		if (suspended)
-			freq_target = (FREQ_STEP_UP_SLEEP_PERCENT * policy->max) / 100;
-		else
-			freq_target = policy->max;
-
-		/* max freq cannot be less than 100. But who knows.... */
-		if (unlikely(freq_target == 0))
-			freq_target = 5;
-
-		this_dbs_info->requested_freq += freq_target;
-		if (this_dbs_info->requested_freq > policy->max)
-			this_dbs_info->requested_freq = policy->max;
-
-		//Screen off mode
-		if (suspended && this_dbs_info->requested_freq > FREQ_SLEEP_MAX)
-		    this_dbs_info->requested_freq = FREQ_SLEEP_MAX;
-
-		//Screen off mode
-		if (!suspended && this_dbs_info->requested_freq < FREQ_AWAKE_MIN)
-		    this_dbs_info->requested_freq = FREQ_AWAKE_MIN;
+		this_dbs_info->requested_freq = policy->max;
 
 		__cpufreq_driver_target(policy, this_dbs_info->requested_freq,
 			CPUFREQ_RELATION_H);
@@ -416,9 +369,10 @@ static void dbs_check_cpu(int cpu)
 	}
 
 	/* Check for frequency decrease */
-	this_dbs_info->down_skip++;
 	if (this_dbs_info->down_skip < dbs_tuners_ins.sampling_down_factor)
 		return;
+	else this_dbs_info->down_skip--; /* just to prevent overflow */
+
 
 	/* Check for frequency decrease */
 	total_idle_ticks = this_dbs_info->prev_cpu_idle_up;
@@ -431,7 +385,6 @@ static void dbs_check_cpu(int cpu)
 
 	/* Scale idle ticks by 100 and compare with up and down ticks */
 	idle_ticks *= 100;
-	this_dbs_info->down_skip = 0;
 
 	freq_down_sampling_rate = dbs_tuners_ins.sampling_rate *
 		dbs_tuners_ins.sampling_down_factor;
@@ -444,33 +397,10 @@ static void dbs_check_cpu(int cpu)
 		 * or if we 'cannot' reduce the speed as the user might want
 		 * freq_target to be zero
 		 */
-		if (this_dbs_info->requested_freq == policy->min && suspended
-				/*|| dbs_tuners_ins.freq_step == 0*/)
+		if (this_dbs_info->requested_freq == policy->min)
 			return;
 
-		//freq_target = (dbs_tuners_ins.freq_step * policy->max) / 100;
-		freq_target = FREQ_STEP_DOWN; //policy->max;
-
-		/* max freq cannot be less than 100. But who knows.... */
-		if (unlikely(freq_target == 0))
-			freq_target = 5;
-
-		// prevent going under 0
-		if(freq_target > this_dbs_info->requested_freq)
-			this_dbs_info->requested_freq = policy->min;
-		else
-			this_dbs_info->requested_freq -= freq_target;
-
-		if (this_dbs_info->requested_freq < policy->min)
-			this_dbs_info->requested_freq = policy->min;
-
-		//Screen on mode
-		if (!suspended && this_dbs_info->requested_freq < FREQ_AWAKE_MIN)
-		    this_dbs_info->requested_freq = FREQ_AWAKE_MIN;
-
-		//Screen off mode
-		if (suspended && this_dbs_info->requested_freq > FREQ_SLEEP_MAX)
-		    this_dbs_info->requested_freq = FREQ_SLEEP_MAX;
+		this_dbs_info->requested_freq = policy->min;
 
 		__cpufreq_driver_target(policy, this_dbs_info->requested_freq,
 				CPUFREQ_RELATION_H);
@@ -481,6 +411,7 @@ static void dbs_check_cpu(int cpu)
 static void do_dbs_timer(struct work_struct *work)
 {
 	int i;
+
 	mutex_lock(&dbs_mutex);
 	for_each_online_cpu(i)
 		dbs_check_cpu(i);
@@ -607,34 +538,19 @@ static int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 	return 0;
 }
 
-#ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_LAGFREE
+#ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_MINMAX
 static
 #endif
-struct cpufreq_governor cpufreq_gov_lagfree = {
-	.name			= "lagfree",
+struct cpufreq_governor cpufreq_gov_minmax = {
+	.name			= "minmax",
 	.governor		= cpufreq_governor_dbs,
 	.max_transition_latency	= TRANSITION_LATENCY_LIMIT,
 	.owner			= THIS_MODULE,
 };
 
-static void lagfree_early_suspend(struct early_suspend *handler) {
-	suspended = 1;
-}
-
-static void lagfree_late_resume(struct early_suspend *handler) {
-	suspended = 0;
-}
-
-static struct early_suspend lagfree_power_suspend = {
-	.suspend = lagfree_early_suspend,
-	.resume = lagfree_late_resume,
-	.level = EARLY_SUSPEND_LEVEL_DISABLE_FB + 1,
-};
-
 static int __init cpufreq_gov_dbs_init(void)
 {
-	register_early_suspend(&lagfree_power_suspend);
-	return cpufreq_register_governor(&cpufreq_gov_lagfree);
+	return cpufreq_register_governor(&cpufreq_gov_minmax);
 }
 
 static void __exit cpufreq_gov_dbs_exit(void)
@@ -642,22 +558,19 @@ static void __exit cpufreq_gov_dbs_exit(void)
 	/* Make sure that the scheduled work is indeed not running */
 	flush_scheduled_work();
 
-	unregister_early_suspend(&lagfree_power_suspend);
-	cpufreq_unregister_governor(&cpufreq_gov_lagfree);
+	cpufreq_unregister_governor(&cpufreq_gov_minmax);
 }
 
-
-MODULE_AUTHOR ("Emilio López <turl@tuxfamily.org>");
-MODULE_DESCRIPTION ("'cpufreq_lagfree' - A dynamic cpufreq governor for "
-		"Low Latency Frequency Transition capable processors "
-		"optimised for use in a battery environment"
-		"Based on conservative by Alexander Clouter");
+MODULE_AUTHOR ("Erasmux");
+MODULE_DESCRIPTION ("'cpufreq_minmax' - A dynamic cpufreq governor which "
+		"minimizes the frequecy jumps by always selecting either "
+		"the minimal or maximal frequency");
 MODULE_LICENSE ("GPL");
 
-#ifdef CONFIG_CPU_FREQ_DEFAULT_GOV_LAGFREE
+#ifdef CONFIG_CPU_FREQ_DEFAULT_GOV_MINMAX
 fs_initcall(cpufreq_gov_dbs_init);
 #else
 module_init(cpufreq_gov_dbs_init);
 #endif
-module_exit(cpufreq_gov_dbs_exit); 
+module_exit(cpufreq_gov_dbs_exit);
 
