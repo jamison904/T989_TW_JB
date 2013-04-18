@@ -75,11 +75,14 @@ static struct usb_device_id ath3k_table[] = {
 	{ USB_DEVICE(0x13d3, 0x3375) },
 	{ USB_DEVICE(0x04CA, 0x3005) },
 
-	/* Atheros AR5BBU12 with sflash firmware */
-	{ USB_DEVICE(0x0489, 0xE02C) },
+ 	/* Atheros AR5BBU12 with sflash firmware */
+ 	{ USB_DEVICE(0x0489, 0xE02C) },
+ 
+	/* Atheros AR5BBU22 with sflash firmware */
+	{ USB_DEVICE(0x0489, 0xE03C) },
 
-	{ }	/* Terminating entry */
-};
+ 	{ }	/* Terminating entry */
+ };
 
 MODULE_DEVICE_TABLE(usb, ath3k_table);
 
@@ -94,8 +97,11 @@ static struct usb_device_id ath3k_blist_tbl[] = {
 	{ USB_DEVICE(0x13d3, 0x3375), .driver_info = BTUSB_ATH3012 },
 	{ USB_DEVICE(0x04ca, 0x3005), .driver_info = BTUSB_ATH3012 },
 
-	{ }	/* Terminating entry */
-};
+	/* Atheros AR5BBU22 with sflash firmware */
+	{ USB_DEVICE(0x0489, 0xE03C), .driver_info = BTUSB_ATH3012 },
+
+ 	{ }	/* Terminating entry */
+ };
 
 #define USB_REQ_DFU_DNLOAD	1
 #define BULK_SIZE		4096
