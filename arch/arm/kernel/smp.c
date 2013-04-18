@@ -288,6 +288,14 @@ static void __cpuinit smp_store_cpu_info(unsigned int cpuid)
 	struct cpuinfo_arm *cpu_info = &per_cpu(cpu_data, cpuid);
 
 	cpu_info->loops_per_jiffy = loops_per_jiffy;
+ 	enter_lazy_tlb(mm, current);
+ 	local_flush_tlb_all();
+ 
+	printk("CPU%u: Booted secondary processor\n", cpu);
+
+ 	cpu_init();
+ 	preempt_disable();
+ 	trace_hardirqs_off();
 }
 
 /*
@@ -300,6 +308,8 @@ asmlinkage void __cpuinit secondary_start_kernel(void)
 	unsigned int cpu = smp_processor_id();
 
 	pr_debug("CPU%u: Booted secondary processor\n", cpu);
+
+	printk("CPU%u: Booted secondary processor\n", cpu);
 
 	/*
 	 * All kernel threads share the same mm context; grab a
