@@ -199,7 +199,7 @@ struct vm_area_struct {
 	struct mempolicy *vm_policy;	/* NUMA policy for the VMA */
 #endif
 #ifdef CONFIG_UKSM
-  struct vma_slot *uksm_vma_slot;
+	struct vma_slot *uksm_vma_slot;
 #endif
 };
 
