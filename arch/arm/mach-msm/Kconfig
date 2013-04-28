@@ -2427,4 +2427,3 @@ config FORCE_FAST_CHARGE
     default y
     help
       A simple sysfs interface to force adapters that+      are detected as USB to charge as AC.
-endif
